@@ -8,6 +8,7 @@ import (
 	_ "net/http/pprof"
 	"net/url"
 	"os"
+	"runtime"
 	"time"
 
 	re_blobstore "github.com/buildbarn/bb-remote-execution/pkg/blobstore"
@@ -130,9 +131,14 @@ func main() {
 	// concurrency is disabled to improve action cache hit rate, but
 	// only if there are no other workers in the same cluster that
 	// have concurrency enabled.
+	subdirectoryFormat := util.DigestKeyWithoutInstance
+	if runtime.GOOS == "windows" {
+		// Try to keep the paths as short as possible
+		subdirectoryFormat = util.DigestKeyShort
+	}
 	environmentManager = environment.NewActionDigestSubdirectoryManager(
 		environment.NewConcurrentManager(environmentManager),
-		util.DigestKeyWithoutInstance)
+		subdirectoryFormat)
 
 	for i := uint64(0); i < workerConfiguration.Concurrency; i++ {
 		go func() {
