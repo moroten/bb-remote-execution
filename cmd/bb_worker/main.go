@@ -78,14 +78,17 @@ func main() {
 
 	// Cached read access to the Content Addressable Storage. All
 	// workers make use of the same cache, to increase the hit rate.
+	hardlinkingCas, err := cas_re.NewHardlinkingContentAddressableStorage(
+		cas.NewBlobAccessContentAddressableStorage(
+			re_blobstore.NewExistencePreconditionBlobAccess(contentAddressableStorageBlobAccess),
+			workerConfiguration.MaximumMessageSizeBytes),
+		util.DigestKeyWithoutInstance, cacheDirectory,
+		int(workerConfiguration.MaximumCacheFileCount), int64(workerConfiguration.MaximumCacheSizeBytes))
+	if err != nil {
+		log.Fatal("Failed to create hard linking CAS: ", err)
+	}
 	contentAddressableStorageReader := cas_re.NewDirectoryCachingContentAddressableStorage(
-		cas_re.NewHardlinkingContentAddressableStorage(
-			cas.NewBlobAccessContentAddressableStorage(
-				re_blobstore.NewExistencePreconditionBlobAccess(contentAddressableStorageBlobAccess),
-				workerConfiguration.MaximumMessageSizeBytes),
-			util.DigestKeyWithoutInstance, cacheDirectory,
-			int(workerConfiguration.MaximumCacheFileCount), int64(workerConfiguration.MaximumCacheSizeBytes)),
-		util.DigestKeyWithoutInstance, int(workerConfiguration.MaximumMemoryCachedDirectories))
+		hardlinkingCas, util.DigestKeyWithoutInstance, int(workerConfiguration.MaximumMemoryCachedDirectories))
 	actionCache := ac.NewBlobAccessActionCache(actionCacheBlobAccess)
 
 	// Create connection with scheduler.

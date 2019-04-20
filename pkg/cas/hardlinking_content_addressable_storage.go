@@ -2,6 +2,7 @@ package cas
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"sync"
 
@@ -49,8 +50,11 @@ type hardlinkingContentAddressableStorage struct {
 // into the cache. Future calls for the same file will hardlink them from the
 // cache to the target location. This reduces the amount of network traffic
 // needed.
-func NewHardlinkingContentAddressableStorage(base cas.ContentAddressableStorage, digestKeyFormat util.DigestKeyFormat, cacheDirectory filesystem.Directory, maxFiles int, maxSize int64) cas.ContentAddressableStorage {
-	return &hardlinkingContentAddressableStorage{
+func NewHardlinkingContentAddressableStorage(
+	base cas.ContentAddressableStorage, digestKeyFormat util.DigestKeyFormat, cacheDirectory filesystem.Directory,
+	maxFiles int, maxSize int64) (cas.ContentAddressableStorage, error) {
+
+	ret := &hardlinkingContentAddressableStorage{
 		ContentAddressableStorage: base,
 
 		digestKeyFormat: digestKeyFormat,
@@ -60,6 +64,25 @@ func NewHardlinkingContentAddressableStorage(base cas.ContentAddressableStorage,
 
 		filesPresentSize: map[string]int64{},
 	}
+	err := ret.makeSubDirectories()
+	return ret, err
+}
+
+const cacheSubDirectoryNameLength = 2
+const cacheSubDirectoryNameFormat = "%02x"
+
+func getSubDirectoryName(key string) string {
+	return key[:cacheSubDirectoryNameLength]
+}
+
+func (cas *hardlinkingContentAddressableStorage) makeSubDirectories() error {
+	for i := 0; i < (1 << (4 * cacheSubDirectoryNameLength)); i++ {
+		subDirectoryName := fmt.Sprintf(cacheSubDirectoryNameFormat, i)
+		if err := cas.cacheDirectory.Mkdir(subDirectoryName, 0777); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (cas *hardlinkingContentAddressableStorage) makeSpace(size int64) error {
@@ -67,7 +90,14 @@ func (cas *hardlinkingContentAddressableStorage) makeSpace(size int64) error {
 		// Remove random file from disk.
 		idx := rand.Intn(len(cas.filesPresentList))
 		key := cas.filesPresentList[idx]
-		if err := cas.cacheDirectory.Remove(key); err != nil {
+		subDirectoryName := getSubDirectoryName(key)
+		cacheSubDirectory, err := cas.cacheDirectory.Enter(subDirectoryName)
+		if err != nil {
+			return err
+		}
+		err = cacheSubDirectory.Remove(key)
+		cacheSubDirectory.Close()
+		if err != nil {
 			return err
 		}
 
@@ -88,11 +118,17 @@ func (cas *hardlinkingContentAddressableStorage) GetFile(ctx context.Context, di
 	} else {
 		key += "-x"
 	}
+	subDirectoryName := getSubDirectoryName(key)
+	cacheSubDirectory, err := cas.cacheDirectory.Enter(subDirectoryName)
+	if err != nil {
+		return err
+	}
+	defer cacheSubDirectory.Close()
 
 	// If the file is present in the cache, hardlink it to the destination.
 	cas.lock.RLock()
 	if _, ok := cas.filesPresentSize[key]; ok {
-		err := cas.cacheDirectory.Link(key, directory, name)
+		err := cacheSubDirectory.Link(key, directory, name)
 		cas.lock.RUnlock()
 		hardlinkingContentAddressableStorageOperationsTotalHit.Inc()
 		return err
@@ -113,7 +149,7 @@ func (cas *hardlinkingContentAddressableStorage) GetFile(ctx context.Context, di
 		if err := cas.makeSpace(sizeBytes); err != nil {
 			return err
 		}
-		if err := directory.Link(name, cas.cacheDirectory, key); err != nil {
+		if err := directory.Link(name, cacheSubDirectory, key); err != nil {
 			return err
 		}
 		cas.filesPresentList = append(cas.filesPresentList, key)
