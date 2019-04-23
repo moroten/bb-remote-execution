@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"path"
+	"sync"
 
 	"github.com/buildbarn/bb-remote-execution/pkg/proto/runner"
 	"github.com/buildbarn/bb-storage/pkg/filesystem"
@@ -15,6 +16,9 @@ import (
 type actionDigestSubdirectoryManager struct {
 	base               Manager
 	subdirectoryFormat util.DigestKeyFormat
+	nameUsageLock      sync.Mutex
+	namesInUseSet      map[string]struct{}
+	nameReleasedWakeup *sync.Cond
 }
 
 // NewActionDigestSubdirectoryManager is an adapter for Manager that
@@ -28,10 +32,39 @@ type actionDigestSubdirectoryManager struct {
 // counter, using the action digest has the advantage of improving
 // determinism in case absolute paths end up in build output.
 func NewActionDigestSubdirectoryManager(base Manager, subdirectoryFormat util.DigestKeyFormat) Manager {
-	return &actionDigestSubdirectoryManager{
+	ret := &actionDigestSubdirectoryManager{
 		base:               base,
 		subdirectoryFormat: subdirectoryFormat,
+		namesInUseSet:      make(map[string]struct{}),
 	}
+	ret.nameReleasedWakeup = sync.NewCond(&ret.nameUsageLock)
+	return ret
+}
+
+func (em *actionDigestSubdirectoryManager) acquireSubdirectoryName(subdirectoryName string) {
+	em.nameUsageLock.Lock()
+	defer em.nameUsageLock.Unlock()
+
+	for true {
+		_, ok := em.namesInUseSet[subdirectoryName]
+		if !ok {
+			break
+		}
+		em.nameReleasedWakeup.Wait()
+	}
+	em.namesInUseSet[subdirectoryName] = struct{}{}
+}
+
+func (em *actionDigestSubdirectoryManager) releaseSubdirectoryName(subdirectoryName string) {
+	em.nameUsageLock.Lock()
+	defer em.nameUsageLock.Unlock()
+
+	_, ok := em.namesInUseSet[subdirectoryName]
+	if !ok {
+		log.Fatal("Cannot release unused subdirectory name ", subdirectoryName)
+	}
+	delete(em.namesInUseSet, subdirectoryName)
+	em.nameReleasedWakeup.Broadcast()
 }
 
 func (em *actionDigestSubdirectoryManager) Acquire(actionDigest *util.Digest, platformProperties map[string]string) (ManagedEnvironment, error) {
@@ -44,7 +77,9 @@ func (em *actionDigestSubdirectoryManager) Acquire(actionDigest *util.Digest, pl
 	// Create build directory within.
 	buildDirectory := environment.GetBuildDirectory()
 	subdirectoryName := actionDigest.GetKey(em.subdirectoryFormat)
+	em.acquireSubdirectoryName(subdirectoryName)
 	if err := buildDirectory.Mkdir(subdirectoryName, 0777); err != nil {
+		em.releaseSubdirectoryName(subdirectoryName)
 		environment.Release()
 		return nil, util.StatusWrapfWithCode(err, codes.Internal, "Failed to create build subdirectory %#v", subdirectoryName)
 	}
@@ -53,12 +88,14 @@ func (em *actionDigestSubdirectoryManager) Acquire(actionDigest *util.Digest, pl
 		if err := buildDirectory.Remove(subdirectoryName); err != nil {
 			log.Print("Failed to remove action digest build directory upon failure to enter: ", err)
 		}
+		em.releaseSubdirectoryName(subdirectoryName)
 		environment.Release()
 		return nil, util.StatusWrapfWithCode(err, codes.Internal, "Failed to enter build subdirectory %#v", subdirectoryName)
 	}
 
 	return &actionDigestSubdirectoryEnvironment{
 		base:             environment,
+		manager:          em,
 		subdirectory:     subdirectory,
 		subdirectoryName: subdirectoryName,
 	}, nil
@@ -66,6 +103,7 @@ func (em *actionDigestSubdirectoryManager) Acquire(actionDigest *util.Digest, pl
 
 type actionDigestSubdirectoryEnvironment struct {
 	base             ManagedEnvironment
+	manager          *actionDigestSubdirectoryManager
 	subdirectory     filesystem.Directory
 	subdirectoryName string
 }
@@ -91,5 +129,6 @@ func (e *actionDigestSubdirectoryEnvironment) Release() {
 	if err := e.base.GetBuildDirectory().RemoveAll(e.subdirectoryName); err != nil {
 		log.Printf("Failed to remove build subdirectory %s: %s", e.subdirectoryName, err)
 	}
+	e.manager.releaseSubdirectoryName(e.subdirectoryName)
 	e.base.Release()
 }
