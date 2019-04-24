@@ -2,6 +2,7 @@ package cas_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	remoteexecution "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
@@ -53,5 +54,98 @@ func TestHardlinkingContentAddressableStorageGetFileSuccess(t *testing.T) {
 	require.NoError(t, err)
 
 	err = cas.GetFile(ctx, newTestDigest("001", 7), destDirectory, "foo.txt", true)
+	require.NoError(t, err)
+}
+
+func TestHardlinkingContentAddressableStorageGetFileMaxCountOverflow(t *testing.T) {
+	ctrl, ctx := gomock.WithContext(context.Background(), t)
+	defer ctrl.Finish()
+
+	destDirectory := mock.NewMockDirectory(ctrl)
+
+	subDirectory := mock.NewMockDirectory(ctrl)
+
+	rootDirectory := mock.NewMockDirectory(ctrl)
+	rootDirectory.EXPECT().Mkdir(gomock.Any(), gomock.Any()).Times(256).Return(nil)
+
+	rootDirectory.EXPECT().Enter("e3").AnyTimes().Return(subDirectory, nil)
+	destDirectory.EXPECT().Link("foo.txt", subDirectory, gomock.Any()).AnyTimes().Return(nil)
+	subDirectory.EXPECT().Close().AnyTimes().Return(nil)
+
+	baseCas := mock.NewMockContentAddressableStorageReader(ctrl)
+	baseCas.EXPECT().GetFile(ctx, gomock.Any(), destDirectory, "foo.txt", true).AnyTimes().Return(nil)
+
+	cas, err := cas.NewHardlinkingContentAddressableStorage(
+		baseCas,
+		util.DigestKeyWithoutInstance,
+		rootDirectory,
+		100, // maxFiles
+		1e9, // maxSize
+	)
+	require.NoError(t, err)
+
+	// Add 100 files
+	for i := 0; i < 100; i++ {
+		err = cas.GetFile(ctx, newTestDigest(fmt.Sprintf("%03d", i), 7), destDirectory, "foo.txt", true)
+		require.NoError(t, err)
+	}
+	// Get 0 and 2 again so that 1 is to be removed when getting 999.
+	subDirectory.EXPECT().Link(newTestHash("002")+"-7+x", destDirectory, "foo.txt").Return(nil)
+	err = cas.GetFile(ctx, newTestDigest("002", 7), destDirectory, "foo.txt", true)
+	require.NoError(t, err)
+	subDirectory.EXPECT().Link(newTestHash("000")+"-7+x", destDirectory, "foo.txt").Return(nil)
+	err = cas.GetFile(ctx, newTestDigest("000", 7), destDirectory, "foo.txt", true)
+	require.NoError(t, err)
+	// Get 999 and expect 1 to be removed.
+	subDirectory.EXPECT().Remove(newTestHash("001") + "-7+x").Return(nil)
+	err = cas.GetFile(ctx, newTestDigest("999", 7), destDirectory, "foo.txt", true)
+	require.NoError(t, err)
+}
+
+func TestHardlinkingContentAddressableStorageGetFileSpaceOverflow(t *testing.T) {
+	ctrl, ctx := gomock.WithContext(context.Background(), t)
+	defer ctrl.Finish()
+
+	destDirectory := mock.NewMockDirectory(ctrl)
+
+	subDirectory := mock.NewMockDirectory(ctrl)
+
+	rootDirectory := mock.NewMockDirectory(ctrl)
+	rootDirectory.EXPECT().Mkdir(gomock.Any(), gomock.Any()).Times(256).Return(nil)
+
+	rootDirectory.EXPECT().Enter("e3").AnyTimes().Return(subDirectory, nil)
+	destDirectory.EXPECT().Link("foo.txt", subDirectory, gomock.Any()).AnyTimes().Return(nil)
+	subDirectory.EXPECT().Close().AnyTimes().Return(nil)
+
+	baseCas := mock.NewMockContentAddressableStorageReader(ctrl)
+	baseCas.EXPECT().GetFile(ctx, gomock.Any(), destDirectory, "foo.txt", true).AnyTimes().Return(nil)
+
+	cas, err := cas.NewHardlinkingContentAddressableStorage(
+		baseCas,
+		util.DigestKeyWithoutInstance,
+		rootDirectory,
+		1e9, // maxFiles
+		700, // maxSize
+	)
+	require.NoError(t, err)
+
+	// Add 100 files
+	for i := 0; i < 100; i++ {
+		err = cas.GetFile(ctx, newTestDigest(fmt.Sprintf("%03d", i), 7), destDirectory, "foo.txt", true)
+		require.NoError(t, err)
+	}
+	// Get 0, 1 and 3 again so that 2 is to be removed when getting 999.
+	subDirectory.EXPECT().Link(newTestHash("003")+"-7+x", destDirectory, "foo.txt").Return(nil)
+	err = cas.GetFile(ctx, newTestDigest("003", 7), destDirectory, "foo.txt", true)
+	require.NoError(t, err)
+	subDirectory.EXPECT().Link(newTestHash("000")+"-7+x", destDirectory, "foo.txt").Return(nil)
+	err = cas.GetFile(ctx, newTestDigest("000", 7), destDirectory, "foo.txt", true)
+	require.NoError(t, err)
+	subDirectory.EXPECT().Link(newTestHash("001")+"-7+x", destDirectory, "foo.txt").Return(nil)
+	err = cas.GetFile(ctx, newTestDigest("001", 7), destDirectory, "foo.txt", true)
+	require.NoError(t, err)
+	// Get 999 and expect 2 to be removed.
+	subDirectory.EXPECT().Remove(newTestHash("002") + "-7+x").Return(nil)
+	err = cas.GetFile(ctx, newTestDigest("999", 1), destDirectory, "foo.txt", true)
 	require.NoError(t, err)
 }

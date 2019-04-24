@@ -1,9 +1,9 @@
 package cas
 
 import (
+	"container/list"
 	"context"
 	"fmt"
-	"math/rand"
 	"sync"
 
 	"github.com/buildbarn/bb-storage/pkg/cas"
@@ -29,6 +29,11 @@ func init() {
 	prometheus.MustRegister(hardlinkingContentAddressableStorageOperationsTotal)
 }
 
+type fileEntry struct {
+	key  string // File name in the cache folder
+	size int64  // Size in bytes
+}
+
 type hardlinkingContentAddressableStorage struct {
 	cas.ContentAddressableStorageReader
 
@@ -39,8 +44,8 @@ type hardlinkingContentAddressableStorage struct {
 	maxFiles        int
 	maxSize         int64
 
-	filesPresentList      []string
-	filesPresentSize      map[string]int64
+	filesPresentList      *list.List // FIFO of fileEntry with push back and pop front
+	filesPresentMap       map[string]*list.Element
 	filesPresentTotalSize int64
 }
 
@@ -62,7 +67,8 @@ func NewHardlinkingContentAddressableStorage(
 		maxFiles:        maxFiles,
 		maxSize:         maxSize,
 
-		filesPresentSize: map[string]int64{},
+		filesPresentList: list.New(),
+		filesPresentMap:  map[string]*list.Element{},
 	}
 	err := ret.makeSubDirectories()
 	return ret, err
@@ -86,27 +92,26 @@ func (cas *hardlinkingContentAddressableStorage) makeSubDirectories() error {
 }
 
 func (cas *hardlinkingContentAddressableStorage) makeSpace(size int64) error {
-	for len(cas.filesPresentList) > 0 && (len(cas.filesPresentList) >= cas.maxFiles || cas.filesPresentTotalSize+size > cas.maxSize) {
-		// Remove random file from disk.
-		idx := rand.Intn(len(cas.filesPresentList))
-		key := cas.filesPresentList[idx]
-		subDirectoryName := getSubDirectoryName(key)
+	for cas.filesPresentList.Len() > 0 && (cas.filesPresentList.Len() >= cas.maxFiles || cas.filesPresentTotalSize+size > cas.maxSize) {
+		// Remove oldest file from disk.
+		element := cas.filesPresentList.Front()
+		file := element.Value.(*fileEntry)
+
+		subDirectoryName := getSubDirectoryName(file.key)
 		cacheSubDirectory, err := cas.cacheDirectory.Enter(subDirectoryName)
 		if err != nil {
 			return err
 		}
-		err = cacheSubDirectory.Remove(key)
+		err = cacheSubDirectory.Remove(file.key)
 		cacheSubDirectory.Close()
 		if err != nil {
 			return err
 		}
 
 		// Remove file from bookkeeping.
-		cas.filesPresentTotalSize -= cas.filesPresentSize[key]
-		delete(cas.filesPresentSize, key)
-		last := len(cas.filesPresentList) - 1
-		cas.filesPresentList[idx] = cas.filesPresentList[last]
-		cas.filesPresentList = cas.filesPresentList[:last]
+		cas.filesPresentTotalSize -= file.size
+		delete(cas.filesPresentMap, file.key)
+		cas.filesPresentList.Remove(element)
 	}
 	return nil
 }
@@ -127,7 +132,8 @@ func (cas *hardlinkingContentAddressableStorage) GetFile(ctx context.Context, di
 
 	// If the file is present in the cache, hardlink it to the destination.
 	cas.lock.RLock()
-	if _, ok := cas.filesPresentSize[key]; ok {
+	if element, ok := cas.filesPresentMap[key]; ok {
+		cas.filesPresentList.MoveToBack(element) // Move it last in the FIFO
 		err := cacheSubDirectory.Link(key, directory, name)
 		cas.lock.RUnlock()
 		hardlinkingContentAddressableStorageOperationsTotalHit.Inc()
@@ -144,7 +150,7 @@ func (cas *hardlinkingContentAddressableStorage) GetFile(ctx context.Context, di
 	// Hardlink the file into the cache.
 	cas.lock.Lock()
 	defer cas.lock.Unlock()
-	if _, ok := cas.filesPresentSize[key]; !ok {
+	if _, ok := cas.filesPresentMap[key]; !ok {
 		sizeBytes := digest.GetSizeBytes()
 		if err := cas.makeSpace(sizeBytes); err != nil {
 			return err
@@ -152,8 +158,8 @@ func (cas *hardlinkingContentAddressableStorage) GetFile(ctx context.Context, di
 		if err := directory.Link(name, cacheSubDirectory, key); err != nil {
 			return err
 		}
-		cas.filesPresentList = append(cas.filesPresentList, key)
-		cas.filesPresentSize[key] = sizeBytes
+		element := cas.filesPresentList.PushBack(&fileEntry{key: key, size: sizeBytes})
+		cas.filesPresentMap[key] = element
 		cas.filesPresentTotalSize += sizeBytes
 	}
 	return nil
