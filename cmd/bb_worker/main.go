@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"time"
 
+	remoteexecution "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	re_blobstore "github.com/buildbarn/bb-remote-execution/pkg/blobstore"
 	"github.com/buildbarn/bb-remote-execution/pkg/builder"
 	"github.com/buildbarn/bb-remote-execution/pkg/configuration/bb_worker"
@@ -187,7 +188,15 @@ func subscribeAndExecute(schedulerClient scheduler.SchedulerClient, buildExecuto
 	}
 	defer stream.CloseSend()
 
+	capabilities := &remoteexecution.Platform{} // TODO: Fill in with real capabilities from command line
 	for {
+		messageToScheduler := &scheduler.GetWorkMessageToScheduler{
+			Content: &scheduler.GetWorkMessageToScheduler_WorkerCapabilities{WorkerCapabilities: capabilities},
+		}
+		if err := stream.Send(messageToScheduler); err != nil {
+			return err
+		}
+		// Receive a request which is satisfied by the just sent capabilities
 		request, err := stream.Recv()
 		if err != nil {
 			return err
@@ -207,7 +216,10 @@ func subscribeAndExecute(schedulerClient scheduler.SchedulerClient, buildExecuto
 
 		response, _ := buildExecutor.Execute(stream.Context(), request)
 		log.Print("ExecuteResponse: ", response)
-		if err := stream.Send(response); err != nil {
+		messageToScheduler = &scheduler.GetWorkMessageToScheduler{
+			Content: &scheduler.GetWorkMessageToScheduler_ExecuteResponse{ExecuteResponse: response},
+		}
+		if err := stream.Send(messageToScheduler); err != nil {
 			return err
 		}
 	}

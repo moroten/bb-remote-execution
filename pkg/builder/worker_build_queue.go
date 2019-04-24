@@ -216,9 +216,14 @@ func executeOnWorker(stream scheduler.Scheduler_GetWorkServer, request *remoteex
 	if err := stream.Send(request); err != nil {
 		return convertErrorToExecuteResponse(err)
 	}
-	response, err := stream.Recv()
+	messageFromWorker, err := stream.Recv()
 	if err != nil {
 		return convertErrorToExecuteResponse(err)
+	}
+	response := messageFromWorker.GetExecuteResponse()
+	if response == nil {
+		return convertErrorToExecuteResponse(status.Errorf(
+			codes.FailedPrecondition, "Scheduler expected execution response message from worker"))
 	}
 	return response
 }
@@ -229,6 +234,15 @@ func (bq *workerBuildQueue) GetWork(stream scheduler.Scheduler_GetWorkServer) er
 
 	// TODO(edsch): Purge jobs from the jobsNameMap after some amount of time.
 	for {
+		// Find out the worker capabilities.
+		messageFromWorker, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		workerCapabilities := messageFromWorker.GetWorkerCapabilities()
+		if workerCapabilities == nil {
+			return status.Errorf(codes.FailedPrecondition, "Scheduler expected worker capabilities message from worker")
+		}
 		// Wait for jobs to appear.
 		// TODO(edsch): sync.Cond.WaitWithContext() would be helpful here.
 		for bq.jobsPending.Len() == 0 {
