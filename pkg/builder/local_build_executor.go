@@ -55,52 +55,6 @@ func NewLocalBuildExecutor(contentAddressableStorage cas.ContentAddressableStora
 	}
 }
 
-func (be *localBuildExecutor) createInputDirectory(ctx context.Context, partialDigest *remoteexecution.Digest, parentDigest *util.Digest, inputDirectory filesystem.Directory, components []string) error {
-	// Obtain directory.
-	digest, err := parentDigest.NewDerivedDigest(partialDigest)
-	if err != nil {
-		return util.StatusWrapf(err, "Failed to extract digest for input directory %#v", path.Join(components...))
-	}
-	directory, err := be.contentAddressableStorage.GetDirectory(ctx, digest)
-	if err != nil {
-		return util.StatusWrapf(err, "Failed to obtain input directory %#v", path.Join(components...))
-	}
-
-	// Create children.
-	for _, file := range directory.Files {
-		childComponents := append(components, file.Name)
-		childDigest, err := digest.NewDerivedDigest(file.Digest)
-		if err != nil {
-			return util.StatusWrapf(err, "Failed to extract digest for input file %#v", path.Join(childComponents...))
-		}
-		if err := be.contentAddressableStorage.GetFile(ctx, childDigest, inputDirectory, file.Name, file.IsExecutable); err != nil {
-			return util.StatusWrapf(err, "Failed to obtain input file %#v", path.Join(childComponents...))
-		}
-	}
-	for _, directory := range directory.Directories {
-		childComponents := append(components, directory.Name)
-		if err := inputDirectory.Mkdir(directory.Name, 0777); err != nil {
-			return util.StatusWrapf(err, "Failed to create input directory %#v", path.Join(childComponents...))
-		}
-		childDirectory, err := inputDirectory.Enter(directory.Name)
-		if err != nil {
-			return util.StatusWrapf(err, "Failed to enter input directory %#v", path.Join(childComponents...))
-		}
-		err = be.createInputDirectory(ctx, directory.Digest, digest, childDirectory, childComponents)
-		childDirectory.Close()
-		if err != nil {
-			return err
-		}
-	}
-	for _, symlink := range directory.Symlinks {
-		childComponents := append(components, symlink.Name)
-		if err := inputDirectory.Symlink(symlink.Target, symlink.Name); err != nil {
-			return util.StatusWrapf(err, "Failed to create input symlink %#v", path.Join(childComponents...))
-		}
-	}
-	return nil
-}
-
 func (be *localBuildExecutor) uploadDirectory(ctx context.Context, outputDirectory filesystem.Directory, parentDigest *util.Digest, children map[string]*remoteexecution.Directory, components []string) (*remoteexecution.Directory, error) {
 	files, err := outputDirectory.ReadDir()
 	if err != nil {
@@ -246,12 +200,7 @@ func (be *localBuildExecutor) Execute(ctx context.Context, request *remoteexecut
 		return convertErrorToExecuteResponse(util.StatusWrap(err, "Failed to acquire build environment")), false
 	}
 	defer environment.Release()
-
-	// Set up inputs.
 	buildDirectory := environment.GetBuildDirectory()
-	if err := be.createInputDirectory(ctx, action.InputRootDigest, actionDigest, buildDirectory, []string{"."}); err != nil {
-		return convertErrorToExecuteResponse(err), false
-	}
 
 	// Create and open parent directories of where we expect to see output.
 	// Build rules generally expect the parent directories to already be

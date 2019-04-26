@@ -228,219 +228,6 @@ func TestLocalBuildExecutorEnvironmentAcquireFailed(t *testing.T) {
 	require.False(t, mayBeCached)
 }
 
-func TestLocalBuildExecutorMissingInputDirectoryDigest(t *testing.T) {
-	ctrl, ctx := gomock.WithContext(context.Background(), t)
-	defer ctrl.Finish()
-	contentAddressableStorage := mock.NewMockContentAddressableStorage(ctrl)
-	contentAddressableStorage.EXPECT().GetAction(
-		ctx, util.MustNewDigest("netbsd", &remoteexecution.Digest{
-			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
-			SizeBytes: 7,
-		})).Return(&remoteexecution.Action{
-		CommandDigest: &remoteexecution.Digest{
-			Hash:      "6666666666666666666666666666666666666666666666666666666666666666",
-			SizeBytes: 123,
-		},
-		InputRootDigest: &remoteexecution.Digest{
-			Hash:      "7777777777777777777777777777777777777777777777777777777777777777",
-			SizeBytes: 42,
-		},
-	}, nil)
-	contentAddressableStorage.EXPECT().GetCommand(
-		ctx, util.MustNewDigest("netbsd", &remoteexecution.Digest{
-			Hash:      "6666666666666666666666666666666666666666666666666666666666666666",
-			SizeBytes: 123,
-		})).Return(&remoteexecution.Command{
-		Arguments: []string{"touch", "foo"},
-		EnvironmentVariables: []*remoteexecution.Command_EnvironmentVariable{
-			{Name: "PATH", Value: "/bin:/usr/bin"},
-		},
-		OutputFiles: []string{"foo"},
-	}, nil)
-	contentAddressableStorage.EXPECT().GetDirectory(
-		ctx, util.MustNewDigest("netbsd", &remoteexecution.Digest{
-			Hash:      "7777777777777777777777777777777777777777777777777777777777777777",
-			SizeBytes: 42,
-		})).Return(&remoteexecution.Directory{
-		Directories: []*remoteexecution.DirectoryNode{
-			{
-				Name: "Hello",
-				Digest: &remoteexecution.Digest{
-					Hash:      "8888888888888888888888888888888888888888888888888888888888888888",
-					SizeBytes: 123,
-				},
-			},
-		},
-	}, nil)
-	contentAddressableStorage.EXPECT().GetDirectory(
-		ctx, util.MustNewDigest("netbsd", &remoteexecution.Digest{
-			Hash:      "8888888888888888888888888888888888888888888888888888888888888888",
-			SizeBytes: 123,
-		})).Return(&remoteexecution.Directory{
-		Directories: []*remoteexecution.DirectoryNode{
-			{
-				Name: "World",
-			},
-		},
-	}, nil)
-	environmentManager := mock.NewMockManager(ctrl)
-	environment := mock.NewMockManagedEnvironment(ctrl)
-	environmentManager.EXPECT().Acquire(
-		util.MustNewDigest("netbsd", &remoteexecution.Digest{
-			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
-			SizeBytes: 7,
-		}),
-		map[string]string{},
-	).Return(environment, nil)
-	buildDirectory := mock.NewMockDirectory(ctrl)
-	buildDirectory.EXPECT().Mkdir("Hello", os.FileMode(0777)).Return(nil)
-	helloDirectory := mock.NewMockDirectory(ctrl)
-	buildDirectory.EXPECT().Enter("Hello").Return(helloDirectory, nil)
-	helloDirectory.EXPECT().Close()
-	helloDirectory.EXPECT().Mkdir("World", os.FileMode(0777)).Return(nil)
-	worldDirectory := mock.NewMockDirectory(ctrl)
-	helloDirectory.EXPECT().Enter("World").Return(worldDirectory, nil)
-	worldDirectory.EXPECT().Close()
-	environment.EXPECT().GetBuildDirectory().Return(buildDirectory)
-	environment.EXPECT().Release()
-	localBuildExecutor := builder.NewLocalBuildExecutor(contentAddressableStorage, environmentManager)
-
-	executeResponse, mayBeCached := localBuildExecutor.Execute(ctx, &remoteexecution.ExecuteRequest{
-		InstanceName: "netbsd",
-		ActionDigest: &remoteexecution.Digest{
-			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
-			SizeBytes: 7,
-		},
-	})
-	require.Equal(t, &remoteexecution.ExecuteResponse{
-		Status: status.New(codes.InvalidArgument, "Failed to extract digest for input directory \"Hello/World\": No digest provided").Proto(),
-	}, executeResponse)
-	require.False(t, mayBeCached)
-}
-
-func TestLocalBuildExecutorInputRootNotInStorage(t *testing.T) {
-	ctrl, ctx := gomock.WithContext(context.Background(), t)
-	defer ctrl.Finish()
-	contentAddressableStorage := mock.NewMockContentAddressableStorage(ctrl)
-	contentAddressableStorage.EXPECT().GetAction(
-		ctx, util.MustNewDigest("netbsd", &remoteexecution.Digest{
-			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
-			SizeBytes: 7,
-		})).Return(&remoteexecution.Action{
-		CommandDigest: &remoteexecution.Digest{
-			Hash:      "6666666666666666666666666666666666666666666666666666666666666666",
-			SizeBytes: 123,
-		},
-		InputRootDigest: &remoteexecution.Digest{
-			Hash:      "7777777777777777777777777777777777777777777777777777777777777777",
-			SizeBytes: 42,
-		},
-	}, nil)
-	contentAddressableStorage.EXPECT().GetCommand(
-		ctx, util.MustNewDigest("netbsd", &remoteexecution.Digest{
-			Hash:      "6666666666666666666666666666666666666666666666666666666666666666",
-			SizeBytes: 123,
-		})).Return(&remoteexecution.Command{
-		Arguments: []string{"touch", "foo"},
-		EnvironmentVariables: []*remoteexecution.Command_EnvironmentVariable{
-			{Name: "PATH", Value: "/bin:/usr/bin"},
-		},
-		OutputFiles: []string{"foo"},
-	}, nil)
-	contentAddressableStorage.EXPECT().GetDirectory(
-		ctx, util.MustNewDigest("netbsd", &remoteexecution.Digest{
-			Hash:      "7777777777777777777777777777777777777777777777777777777777777777",
-			SizeBytes: 42,
-		})).Return(nil, status.Error(codes.Internal, "Storage is offline"))
-	environmentManager := mock.NewMockManager(ctrl)
-	environment := mock.NewMockManagedEnvironment(ctrl)
-	environmentManager.EXPECT().Acquire(
-		util.MustNewDigest("netbsd", &remoteexecution.Digest{
-			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
-			SizeBytes: 7,
-		}),
-		map[string]string{},
-	).Return(environment, nil)
-	buildDirectory := mock.NewMockDirectory(ctrl)
-	environment.EXPECT().GetBuildDirectory().Return(buildDirectory)
-	environment.EXPECT().Release()
-	localBuildExecutor := builder.NewLocalBuildExecutor(contentAddressableStorage, environmentManager)
-
-	executeResponse, mayBeCached := localBuildExecutor.Execute(ctx, &remoteexecution.ExecuteRequest{
-		InstanceName: "netbsd",
-		ActionDigest: &remoteexecution.Digest{
-			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
-			SizeBytes: 7,
-		},
-	})
-	require.Equal(t, &remoteexecution.ExecuteResponse{
-		Status: status.New(codes.Internal, "Failed to obtain input directory \".\": Storage is offline").Proto(),
-	}, executeResponse)
-	require.False(t, mayBeCached)
-}
-
-func TestLocalBuildExecutorOutputDirectoryCreationFailure(t *testing.T) {
-	ctrl, ctx := gomock.WithContext(context.Background(), t)
-	defer ctrl.Finish()
-	contentAddressableStorage := mock.NewMockContentAddressableStorage(ctrl)
-	contentAddressableStorage.EXPECT().GetAction(
-		ctx, util.MustNewDigest("fedora", &remoteexecution.Digest{
-			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
-			SizeBytes: 7,
-		})).Return(&remoteexecution.Action{
-		CommandDigest: &remoteexecution.Digest{
-			Hash:      "6666666666666666666666666666666666666666666666666666666666666666",
-			SizeBytes: 123,
-		},
-		InputRootDigest: &remoteexecution.Digest{
-			Hash:      "7777777777777777777777777777777777777777777777777777777777777777",
-			SizeBytes: 42,
-		},
-	}, nil)
-	contentAddressableStorage.EXPECT().GetCommand(
-		ctx, util.MustNewDigest("fedora", &remoteexecution.Digest{
-			Hash:      "6666666666666666666666666666666666666666666666666666666666666666",
-			SizeBytes: 123,
-		})).Return(&remoteexecution.Command{
-		Arguments: []string{"touch", "foo"},
-		EnvironmentVariables: []*remoteexecution.Command_EnvironmentVariable{
-			{Name: "PATH", Value: "/bin:/usr/bin"},
-		},
-		OutputFiles: []string{"foo/bar/baz"},
-	}, nil)
-	contentAddressableStorage.EXPECT().GetDirectory(
-		ctx, util.MustNewDigest("fedora", &remoteexecution.Digest{
-			Hash:      "7777777777777777777777777777777777777777777777777777777777777777",
-			SizeBytes: 42,
-		})).Return(&remoteexecution.Directory{}, nil)
-	environmentManager := mock.NewMockManager(ctrl)
-	environment := mock.NewMockManagedEnvironment(ctrl)
-	environmentManager.EXPECT().Acquire(
-		util.MustNewDigest("fedora", &remoteexecution.Digest{
-			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
-			SizeBytes: 7,
-		}),
-		map[string]string{},
-	).Return(environment, nil)
-	buildDirectory := mock.NewMockDirectory(ctrl)
-	buildDirectory.EXPECT().Mkdir("foo", os.FileMode(0777)).Return(status.Error(codes.Internal, "Out of disk space"))
-	environment.EXPECT().GetBuildDirectory().Return(buildDirectory)
-	environment.EXPECT().Release()
-	localBuildExecutor := builder.NewLocalBuildExecutor(contentAddressableStorage, environmentManager)
-
-	executeResponse, mayBeCached := localBuildExecutor.Execute(ctx, &remoteexecution.ExecuteRequest{
-		InstanceName: "fedora",
-		ActionDigest: &remoteexecution.Digest{
-			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
-			SizeBytes: 7,
-		},
-	})
-	require.Equal(t, &remoteexecution.ExecuteResponse{
-		Status: status.New(codes.Internal, "Failed to create output directory \"foo\": Out of disk space").Proto(),
-	}, executeResponse)
-	require.False(t, mayBeCached)
-}
-
 func TestLocalBuildExecutorOutputSymlinkReadingFailure(t *testing.T) {
 	ctrl, ctx := gomock.WithContext(context.Background(), t)
 	defer ctrl.Finish()
@@ -470,11 +257,6 @@ func TestLocalBuildExecutorOutputSymlinkReadingFailure(t *testing.T) {
 		},
 		OutputDirectories: []string{"foo"},
 	}, nil)
-	contentAddressableStorage.EXPECT().GetDirectory(
-		ctx, util.MustNewDigest("nintendo64", &remoteexecution.Digest{
-			Hash:      "7777777777777777777777777777777777777777777777777777777777777777",
-			SizeBytes: 42,
-		})).Return(&remoteexecution.Directory{}, nil)
 	buildDirectory := mock.NewMockDirectory(ctrl)
 	contentAddressableStorage.EXPECT().PutFile(ctx, buildDirectory, ".stdout.txt", gomock.Any()).Return(
 		util.MustNewDigest("nintendo64", &remoteexecution.Digest{
@@ -525,6 +307,60 @@ func TestLocalBuildExecutorOutputSymlinkReadingFailure(t *testing.T) {
 	})
 	require.Equal(t, &remoteexecution.ExecuteResponse{
 		Status: status.New(codes.Internal, "Failed to read output symlink \"foo/bar\": Cosmic rays caused interference").Proto(),
+	}, executeResponse)
+	require.False(t, mayBeCached)
+}
+
+func TestLocalBuildExecutorOutputDirectoryCreationFailure(t *testing.T) {
+	ctrl, ctx := gomock.WithContext(context.Background(), t)
+	defer ctrl.Finish()
+	contentAddressableStorage := mock.NewMockContentAddressableStorage(ctrl)
+	contentAddressableStorage.EXPECT().GetAction(
+		ctx, util.MustNewDigest("fedora", &remoteexecution.Digest{
+			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
+			SizeBytes: 7,
+		})).Return(&remoteexecution.Action{
+		CommandDigest: &remoteexecution.Digest{
+			Hash:      "6666666666666666666666666666666666666666666666666666666666666666",
+			SizeBytes: 123,
+		},
+		// InputRootDigest should not be needed.
+	}, nil)
+	contentAddressableStorage.EXPECT().GetCommand(
+		ctx, util.MustNewDigest("fedora", &remoteexecution.Digest{
+			Hash:      "6666666666666666666666666666666666666666666666666666666666666666",
+			SizeBytes: 123,
+		})).Return(&remoteexecution.Command{
+		Arguments: []string{"touch", "foo"},
+		EnvironmentVariables: []*remoteexecution.Command_EnvironmentVariable{
+			{Name: "PATH", Value: "/bin:/usr/bin"},
+		},
+		OutputFiles: []string{"foo/bar/baz"},
+	}, nil)
+	environmentManager := mock.NewMockManager(ctrl)
+	environment := mock.NewMockManagedEnvironment(ctrl)
+	environmentManager.EXPECT().Acquire(
+		util.MustNewDigest("fedora", &remoteexecution.Digest{
+			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
+			SizeBytes: 7,
+		}),
+		map[string]string{},
+	).Return(environment, nil)
+	buildDirectory := mock.NewMockDirectory(ctrl)
+	buildDirectory.EXPECT().Mkdir("foo", os.FileMode(0777)).Return(status.Error(codes.Internal, "Out of disk space"))
+	environment.EXPECT().GetBuildDirectory().Return(buildDirectory)
+	environment.EXPECT().Release()
+	localBuildExecutor := builder.NewLocalBuildExecutor(contentAddressableStorage, environmentManager)
+
+	executeResponse, mayBeCached := localBuildExecutor.Execute(ctx, &remoteexecution.ExecuteRequest{
+		InstanceName: "fedora",
+		ActionDigest: &remoteexecution.Digest{
+			Hash:      "5555555555555555555555555555555555555555555555555555555555555555",
+			SizeBytes: 7,
+		},
+	})
+	require.Equal(t, &remoteexecution.ExecuteResponse{
+		Status: status.New(codes.Internal, "Failed to create output directory \"foo\": Out of disk space").Proto(),
 	}, executeResponse)
 	require.False(t, mayBeCached)
 }
@@ -610,26 +446,6 @@ func TestLocalBuildExecutorSuccess(t *testing.T) {
 			},
 		},
 	}, nil)
-	contentAddressableStorage.EXPECT().GetDirectory(
-		ctx, util.MustNewDigest("ubuntu1804", &remoteexecution.Digest{
-			Hash:      "0000000000000000000000000000000000000000000000000000000000000003",
-			SizeBytes: 345,
-		})).Return(&remoteexecution.Directory{
-		Files: []*remoteexecution.FileNode{
-			{
-				Name: "hello.cc",
-				Digest: &remoteexecution.Digest{
-					Hash:      "0000000000000000000000000000000000000000000000000000000000000004",
-					SizeBytes: 456,
-				},
-			},
-		},
-	}, nil)
-	contentAddressableStorage.EXPECT().GetFile(
-		ctx, util.MustNewDigest("ubuntu1804", &remoteexecution.Digest{
-			Hash:      "0000000000000000000000000000000000000000000000000000000000000004",
-			SizeBytes: 456,
-		}), buildDirectory, "hello.cc", false).Return(nil)
 
 	// Write operations against the Content Addressable Storage.
 	contentAddressableStorage.EXPECT().PutFile(ctx, buildDirectory, ".stdout.txt", gomock.Any()).Return(

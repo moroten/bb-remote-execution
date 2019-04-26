@@ -136,9 +136,11 @@ func main() {
 		// Try to keep the paths as short as possible
 		subdirectoryFormat = util.DigestKeyShort
 	}
-	environmentManager = environment.NewActionDigestSubdirectoryManager(
-		environment.NewConcurrentManager(environmentManager),
-		subdirectoryFormat)
+	environmentManager = environment.NewInputProviderManager(
+		environment.NewActionDigestSubdirectoryManager(
+			environment.NewConcurrentManager(environmentManager),
+			subdirectoryFormat),
+		contentAddressableStorageReader)
 
 	for i := uint64(0); i < workerConfiguration.Concurrency; i++ {
 		go func() {
