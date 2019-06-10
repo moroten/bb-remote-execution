@@ -35,6 +35,7 @@ go_test(
     srcs = [
         "action_digest_subdirectory_manager_test.go",
         "clean_build_directory_manager_test.go",
+        "input_provider_manager_test.go",
     ],
     embed = [":go_default_library"],
     deps = [
